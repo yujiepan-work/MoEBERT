@@ -487,7 +487,8 @@ class MoEBertForSequenceClassification(BertPreTrainedModel):
             )
             distillation_loss = self.get_distillation_loss(outputs, logits, teacher_outputs)
 
-        loss = loss \
+        if loss is not None:
+            loss = loss \
                + gate_loss * self.load_balance_alpha \
                + distillation_loss * self.distill_alpha
 

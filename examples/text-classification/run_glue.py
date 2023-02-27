@@ -265,6 +265,12 @@ class ModelArguments:
         default=0.0,
         metadata={"help": "Token Masking Probability"},
     )
+    export_to_onnx: bool = field(
+        default=False,
+        metadata={
+            "help": "whether to save onnx export"
+        },
+    )
 
 
 def main():
@@ -720,6 +726,50 @@ def main():
                         else:
                             item = label_list[item]
                             writer.write(f"{index}\t{item}\n")
+
+    trainer.model.eval()
+    if model_args.export_to_onnx:
+        # dynamic
+        batch_size = 4
+        seq_len = 16
+        inputs = {'input_ids': torch.arange(batch_size * seq_len).reshape((batch_size, seq_len)).long().cuda(),
+                'attention_mask': torch.ones((batch_size, seq_len)).long().cuda(),
+                'token_type_ids': torch.zeros((batch_size, seq_len)).long().cuda(),
+                }
+        torch.onnx.export(trainer.model,               # model being run
+                        tuple(inputs.values()),      # model input (or a tuple for multiple inputs)
+                        f=os.path.join(training_args.output_dir, f'model-dynamic.onnx'),  # where to save the model (can be a file or file-like object)
+                        export_params=True,        # store the trained parameter weights inside the model file
+                        opset_version=11,          # the ONNX version to export the model to
+                        do_constant_folding=True,  # whether to execute constant folding for optimization
+                        input_names=['input_ids', 'attention_mask', 'token_type_ids'],   # the model's input names
+                        output_names=['logits'],  # the model's output names
+                        dynamic_axes={'input_ids': {0: 'batch_size', 1: 'sequence_length'},
+                                        'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
+                                        'token_type_ids': {0: 'batch_size', 1: 'sequence_length'},
+                                        'logits': {0: 'batch_size'}},
+                        )
+
+        # static shape
+        for batch_size in [1, 4]:
+            for seq_len in [16, 32, 64, 128, 256, 384]:
+                inputs = {'input_ids': torch.arange(batch_size * seq_len).reshape((batch_size, seq_len)).long().cuda(),
+                        'attention_mask': torch.ones((batch_size, seq_len)).long().cuda(),
+                        'token_type_ids': torch.zeros((batch_size, seq_len)).long().cuda(),
+                        }
+                torch.onnx.export(trainer.model,               # model being run
+                                tuple(inputs.values()),      # model input (or a tuple for multiple inputs)
+                                f=os.path.join(training_args.output_dir, f'model-bs{batch_size}-L{seq_len}.onnx'),  # where to save the model (can be a file or file-like object)
+                                export_params=True,        # store the trained parameter weights inside the model file
+                                opset_version=11,          # the ONNX version to export the model to
+                                do_constant_folding=True,  # whether to execute constant folding for optimization
+                                input_names=['input_ids', 'attention_mask', 'token_type_ids'],   # the model's input names
+                                output_names=['logits'],  # the model's output names
+                                # dynamic_axes={'input_ids': {0: 'batch_size', 1: 'sequence_length'},
+                                #                 'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
+                                #                 'token_type_ids': {0: 'batch_size', 1: 'sequence_length'},
+                                #                 'logits': {0: 'batch_size'}},
+                                )
 
 
 def _mp_fn(index):

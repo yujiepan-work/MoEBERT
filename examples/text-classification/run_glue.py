@@ -574,7 +574,7 @@ def main():
         if data_args.max_train_samples is not None:
             train_dataset = train_dataset.select(range(data_args.max_train_samples))
 
-    if training_args.do_eval:
+    if training_args.do_eval or 1:
         if "validation" not in datasets and "validation_matched" not in datasets:
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = datasets["validation_matched" if data_args.task_name == "mnli" else "validation"]
@@ -629,7 +629,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
-        eval_dataset=eval_dataset if training_args.do_eval else None,
+        eval_dataset=eval_dataset,
         compute_metrics=compute_metrics,
         tokenizer=tokenizer,
         data_collator=data_collator,
@@ -666,11 +666,10 @@ def main():
 
         if config.moebert_load_experts:
             from transformers.file_utils import WEIGHTS_NAME
-            import process.utils
-
-            process.utils.process_ffn(model)
+            from transformers.moebert.utils import process_ffn
+            process_ffn(model)
             if checkpoint is not None and os.path.isfile(os.path.join(checkpoint, WEIGHTS_NAME)):
-                logger.info(f"Loading model from {checkpoint}).")
+                logger.info(f"!!!Loading model from {checkpoint}).")
                 state_dict = torch.load(os.path.join(checkpoint, WEIGHTS_NAME), map_location="cpu")
                 trainer._load_state_dict_in_model(state_dict)
                 del state_dict
@@ -690,6 +689,9 @@ def main():
 
             trainer.log_metrics("eval", metrics)
             trainer.save_metrics("eval", metrics)
+
+        trainer.save_model()  # Saves the tokenizer too for easy upload
+        trainer.save_state()
 
     if training_args.do_predict:
         logger.info("*** Test ***")

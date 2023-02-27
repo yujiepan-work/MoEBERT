@@ -22,7 +22,8 @@ class MoELayer(nn.Module):
 
     def _random_hash_list(self, vocab_size):
         hash_list = torch.randint(low=0, high=self.num_experts, size=(vocab_size,))
-        return hash_list
+        self.register_buffer('hash_list_predefined', hash_list)
+        return self.hash_list_predefined
 
     def _balance_hash_list(self, hash_list):
         with open(hash_list, "rb") as file:
@@ -120,8 +121,26 @@ class MoELayer(nn.Module):
         x = x.view(-1, dim)
         self.hash_list = self.hash_list.to(x.device)
         gate = self.hash_list[input_ids.view(-1)]
+        order = gate.argsort(stable=True, dim=0) # values are unique. The order must be stable !!
 
-        order = gate.argsort(0)
+        num_tokens = F.one_hot(gate, self.num_experts).gt(0).sum(0)
+        gate_load = num_tokens.clone()
+
+        x = [self.experts[i](x[gate==i]) for i in range(self.num_experts)]
+        x = torch.cat(x, dim=0)
+        x = x[order.argsort(0)]  # restore original order
+        x = x.view(bsz, seq_len, dim)
+
+        return x, 0.0, gate_load
+
+    def _forward_hash_original(self, x, input_ids):
+        bsz, seq_len, dim = x.size()
+
+        x = x.view(-1, dim)
+        self.hash_list = self.hash_list.to(x.device)
+        gate = self.hash_list[input_ids.view(-1)]
+
+        order = gate.argsort(0) # values are unique. The order may be unstable !!
         num_tokens = F.one_hot(gate, self.num_experts).gt(0).sum(0)
         gate_load = num_tokens.clone()
         x = x[order]  # reorder according to expert number

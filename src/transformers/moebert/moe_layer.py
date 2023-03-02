@@ -22,7 +22,8 @@ class MoELayer(nn.Module):
 
     def _random_hash_list(self, vocab_size):
         hash_list = torch.randint(low=0, high=self.num_experts, size=(vocab_size,))
-        return hash_list
+        self.register_buffer('hash_list_buffer', hash_list)
+        return self.hash_list_buffer
 
     def _balance_hash_list(self, hash_list):
         with open(hash_list, "rb") as file:

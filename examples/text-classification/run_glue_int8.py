@@ -44,7 +44,6 @@ from transformers.models.bert.modeling_bert_moe import MoEBertForSequenceClassif
 from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from transformers.utils import check_min_version
 
-
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.4.0")
 
@@ -573,7 +572,7 @@ def main():
         return result
 
     datasets = datasets.map(preprocess_function, batched=True, load_from_cache_file=not data_args.overwrite_cache)
-    if training_args.do_train or 1:
+    if training_args.do_train:
         if "train" not in datasets:
             raise ValueError("--do_train requires a train dataset")
         train_dataset = datasets["train"]
@@ -634,13 +633,108 @@ def main():
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
+        train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset,
         compute_metrics=compute_metrics,
         tokenizer=tokenizer,
         data_collator=data_collator,
         eval_dataset_mnli_mm=eval_dataset_mnli_mm if data_args.task_name == "mnli" and training_args.do_eval else None,
     )
+
+    def nncf_compress(model):
+        import torch
+        import os
+        from transformers import AutoModelForSequenceClassification
+        from pathlib import Path
+        import os
+
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+        from torch.utils.data import DataLoader, Dataset
+
+        import nncf
+        from nncf.config import NNCFConfig
+        from nncf.config.structures import (BNAdaptationInitArgs,
+                                            QuantizationRangeInitArgs)
+        from nncf.torch import create_compressed_model
+        from nncf.torch.initialization import PTInitializingDataLoader
+
+        class MyDataset(Dataset):
+            def __init__(self, batch_size, seq_len) -> None:
+                super().__init__()
+                self.batch_size = batch_size
+                self.seq_len = seq_len
+
+            def __len__(self):
+                return 100
+
+            def __getitem__(self, i):
+                batch_size = self.batch_size
+                seq_len = self.seq_len
+                return {'input_ids': torch.randint(0, 20, (seq_len, )).reshape(-1).long(),
+                'attention_mask': (torch.rand((seq_len, )) > 0.5).long(),
+                'token_type_ids':(torch.rand((seq_len,)) > 0.5).long()
+                }
+
+        class MyInitializingDataloader(PTInitializingDataLoader):
+            def get_inputs(self, dataloader_output):
+                return (), dataloader_output
+
+
+        dataset = MyDataset(16, 128)
+        train_dataloader = DataLoader(dataset, batch_size=16)
+        nncf_config = NNCFConfig.from_dict({
+            "input_info": [
+                {"sample_size": [1, 128],
+                "type": "long"
+                },
+                {"sample_size": [1, 128],
+                "type": "long"
+                },
+                {"sample_size": [1, 128],
+                "type": "long"
+                }
+                
+            ],
+            "compression": [
+                {
+                "algorithm": "quantization",
+                "preset": "mixed",
+                "overflow_fix": "disable",
+
+                "scope_overrides": {"activations": {"{re}.*matmul_0": {"mode": "symmetric"}}},
+                "ignored_scopes": [
+                    "{re}.*Embedding*",
+                    "{re}.*__add___[0-1]",
+                    "{re}.*layer_norm_0",
+                    "{re}.*matmul_1",
+                    "{re}.*__truediv__*",
+                ],
+                }
+            ],
+            "logdir": training_args.output_dir,
+            # "log_dir": training_args.output_dir,
+        })
+        nncf_config.register_extra_structs([
+            QuantizationRangeInitArgs(MyInitializingDataloader(train_dataloader)),
+            BNAdaptationInitArgs(MyInitializingDataloader(train_dataloader)),
+        ])
+        compression_ctrl, compressed_model = create_compressed_model(model, nncf_config)
+        return compression_ctrl, compressed_model
+
+    if config.moebert_load_experts:
+        from transformers.file_utils import WEIGHTS_NAME
+        from transformers.moebert.utils import process_ffn
+        process_ffn(model, do_weights_copy=False)
+        if os.path.isfile(os.path.join(model_args.model_name_or_path, WEIGHTS_NAME)):
+            logger.info(f"!!!Loading model from {model_args.model_name_or_path}).")
+            state_dict = torch.load(os.path.join(model_args.model_name_or_path, WEIGHTS_NAME), map_location="cpu")
+            trainer._load_state_dict_in_model(state_dict)
+            del state_dict
+
+    compression_ctrl, model = nncf_compress(trainer.model)
+    trainer.model = model
 
     checkpoint = None
     if last_checkpoint is not None:
@@ -727,7 +821,7 @@ def main():
                             item = label_list[item]
                             writer.write(f"{index}\t{item}\n")
 
-    trainer.model.eval()
+    trainer.model.cpu().eval()
     if model_args.export_to_onnx:
         # dynamic
         batch_size = 4

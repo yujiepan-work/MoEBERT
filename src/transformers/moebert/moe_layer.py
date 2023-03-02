@@ -122,6 +122,7 @@ class MoELayer(nn.Module):
         self.hash_list = self.hash_list.to(x.device)
         gate = self.hash_list[input_ids.view(-1)]
         # order = torch.argsort(gate, dim=0, stable=True) # values are unique. The order must be stable !!
+        # order = torch.argsort(gate, dim=0, stable=True) # values are unique. The order must be stable. !! # TODO(yujie)
         order = torch.argsort(gate, dim=0) # values are unique. The order must be stable. !! # TODO(yujie)
 
         # num_tokens = F.one_hot(gate, self.num_experts).gt(0).sum(0)

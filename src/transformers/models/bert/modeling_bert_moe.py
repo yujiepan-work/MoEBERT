@@ -28,6 +28,8 @@ from ...utils import logging
 
 logger = logging.get_logger(__name__)
 
+from openvino.runtime import Core
+core = Core()
 
 def symmetric_KL_loss(p, q):
     """ symmetric KL-divergence 1/2*(KL(p||q)+KL(q||p)) """
@@ -432,6 +434,57 @@ class MoEBertForSequenceClassification(BertPreTrainedModel):
             else:
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
         return outputs, logits, loss, gate_loss
+    
+    def compile_ov(self):
+        if self.request is None:
+            logger.info("Compiling the model and creating the inference request ...")
+            # Only enable CACHE_DIR for GPU because CACHE_DIR fails with some INT8 models on CPU with 2022.3
+            ov_config = None
+            compiled_model = core.compile_model(self.ovmodel)
+            self.request = compiled_model.create_infer_request()
+
+    def forward_ov(
+            self,
+            input_ids=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            labels=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
+    ):
+        if not hasattr(self, 'ovmodel'):
+            self.ovmodel = core.read_model('/nvme2/yujiepan/workspace/moe-bert/moe-bert-learning/LOGS/moe-learn/moebert-fp32-withbug/model-bs1-L128.xml')
+            self.request = None
+            self.compile_ov()
+        
+        input_ids = input_ids.cpu().numpy()
+        attention_mask = attention_mask.cpu().numpy()
+        token_type_ids = token_type_ids.cpu().numpy()
+        
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+        inputs["token_type_ids"] = token_type_ids
+
+
+        outputs = self.request.infer(inputs)
+        outputs = {key.get_any_name(): value for key, value in outputs.items()}
+        logits = torch.from_numpy(outputs["logits"]).to(self.device)
+        loss = None
+
+        # if not return_dict:
+        #     output = (logits,)
+        #     return ((loss,) + output) if loss is not None else output
+
+        return SequenceClassifierOutput(
+            logits=logits,
+            loss=torch.tensor([0.])
+        )
 
     def forward(
             self,

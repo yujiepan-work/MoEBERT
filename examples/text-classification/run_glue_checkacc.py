@@ -573,7 +573,7 @@ def main():
         return result
 
     datasets = datasets.map(preprocess_function, batched=True, load_from_cache_file=not data_args.overwrite_cache)
-    if training_args.do_train or 1:
+    if training_args.do_train:
         if "train" not in datasets:
             raise ValueError("--do_train requires a train dataset")
         train_dataset = datasets["train"]
@@ -634,7 +634,7 @@ def main():
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
+        train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset,
         compute_metrics=compute_metrics,
         tokenizer=tokenizer,
@@ -732,9 +732,9 @@ def main():
         # dynamic
         batch_size = 4
         seq_len = 16
-        inputs = {'input_ids': torch.arange(batch_size * seq_len).reshape((batch_size, seq_len)).long(),
-                'attention_mask': torch.ones((batch_size, seq_len)).long(),
-                'token_type_ids': torch.zeros((batch_size, seq_len)).long(),
+        inputs = {'input_ids': torch.arange(batch_size * seq_len).reshape((batch_size, seq_len)).long().cuda(),
+                'attention_mask': torch.ones((batch_size, seq_len)).long().cuda(),
+                'token_type_ids': torch.zeros((batch_size, seq_len)).long().cuda(),
                 }
         torch.onnx.export(trainer.model,               # model being run
                         tuple(inputs.values()),      # model input (or a tuple for multiple inputs)
@@ -753,9 +753,9 @@ def main():
         # static shape
         for batch_size in [1, 4]:
             for seq_len in [16, 32, 64, 128, 256, 384]:
-                inputs = {'input_ids': torch.arange(batch_size * seq_len).reshape((batch_size, seq_len)).long(),
-                        'attention_mask': torch.ones((batch_size, seq_len)).long(),
-                        'token_type_ids': torch.zeros((batch_size, seq_len)).long(),
+                inputs = {'input_ids': torch.arange(batch_size * seq_len).reshape((batch_size, seq_len)).long().cuda(),
+                        'attention_mask': torch.ones((batch_size, seq_len)).long().cuda(),
+                        'token_type_ids': torch.zeros((batch_size, seq_len)).long().cuda(),
                         }
                 torch.onnx.export(trainer.model,               # model being run
                                 tuple(inputs.values()),      # model input (or a tuple for multiple inputs)

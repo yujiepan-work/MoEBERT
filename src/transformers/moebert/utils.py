@@ -14,7 +14,7 @@ def use_experts(layer_idx):
     return True
 
 
-def process_ffn(model):
+def process_ffn(model, do_weights_copy=True):
     if model.config.model_type == "bert":
         inner_model = model.bert
     else:
@@ -23,7 +23,10 @@ def process_ffn(model):
     for i in range(model.config.num_hidden_layers):
         model_layer = inner_model.encoder.layer[i]
         if model_layer.use_experts:
-            model_layer.importance_processor.load_experts(model_layer)
+            # if do_weights_copy:
+            #     model_layer.importance_processor.load_experts(model_layer)
+            # else:
+                model_layer.importance_processor.is_moe = True
 
 
 class ImportanceProcessor:
@@ -34,8 +37,8 @@ class ImportanceProcessor:
         self.intermediate_size = config.moebert_expert_dim  # FFN hidden dimension
         self.share_importance = config.moebert_share_importance  # number of shared FFN dimension
 
-        importance = ImportanceProcessor.load_importance_single(config.moebert_load_importance)[layer_idx, :]
-        self.importance = self._split_importance(importance)
+        # importance = ImportanceProcessor.load_importance_single(config.moebert_load_importance)[layer_idx, :]
+        # self.importance = self._split_importance(importance)
 
         self.is_moe = False  # safety check
 

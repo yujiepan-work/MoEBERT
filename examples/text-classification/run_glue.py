@@ -666,9 +666,9 @@ def main():
 
         if config.moebert_load_experts:
             from transformers.file_utils import WEIGHTS_NAME
-            import process.utils
+            from transformers.moebert.utils import process_ffn
 
-            process.utils.process_ffn(model)
+            process_ffn(model)
             if checkpoint is not None and os.path.isfile(os.path.join(checkpoint, WEIGHTS_NAME)):
                 logger.info(f"Loading model from {checkpoint}).")
                 state_dict = torch.load(os.path.join(checkpoint, WEIGHTS_NAME), map_location="cpu")

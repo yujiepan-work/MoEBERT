@@ -53,6 +53,8 @@ class MoEBertLayer(BertLayer):
             self.crossattention = BertAttention(config)
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
+        self.layer_idx = layer_idx
+        self.gate_load_logging = []
 
         # construct experts
         self.use_experts = use_experts(layer_idx)
@@ -145,6 +147,7 @@ class MoEBertLayer(BertLayer):
         layer_output, gate_loss, gate_load = self.experts(
             attention_output, expert_input_ids, expert_attention_mask
         )
+        self.gate_load_logging.append(gate_load)
         return layer_output, gate_loss
 
 
@@ -453,6 +456,7 @@ class MoEBertForSequenceClassification(BertPreTrainedModel):
             If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        # return_dict = False
         if self.training:
             output_hidden_states = True
 

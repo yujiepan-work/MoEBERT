@@ -683,13 +683,16 @@ def main():
             eval_datasets.append(datasets["validation_mismatched"])
 
         for eval_dataset, task in zip(eval_datasets, tasks):
-            metrics = trainer.evaluate(eval_dataset=eval_dataset)
+            # measure_latency(trainer.model, eval_dataset, training_args)
+            # metrics = trainer.evaluate(eval_dataset=eval_dataset)
+            # max_val_samples = data_args.max_val_samples if data_args.max_val_samples is not None else len(eval_dataset)
+            # metrics["eval_samples"] = min(max_val_samples, len(eval_dataset))
+            # trainer.log_metrics("eval", metrics)
+            # trainer.save_metrics("eval", metrics)
 
-            max_val_samples = data_args.max_val_samples if data_args.max_val_samples is not None else len(eval_dataset)
-            metrics["eval_samples"] = min(max_val_samples, len(eval_dataset))
-
-            trainer.log_metrics("eval", metrics)
-            trainer.save_metrics("eval", metrics)
+            # log_gate_load(trainer.model, training_args)
+            # do_profile(trainer.model, eval_dataset)
+            do_profile(trainer.model, eval_dataset, training_args, data_args)
 
     if training_args.do_predict:
         logger.info("*** Test ***")
@@ -719,51 +722,34 @@ def main():
                             item = label_list[item]
                             writer.write(f"{index}\t{item}\n")
 
-    def log_gate_load(model: MoEBertForSequenceClassification, training_args):
-        results = []
-        for moelayer in model.bert.encoder.layer:
-            results.append((moelayer.layer_idx, moelayer.gate_load_logging))
-        save_to = os.path.join(training_args.output_dir, f'gate_load.pth')
-        torch.save(results, save_to)
-        print('log gate load', save_to)
-    
-    log_gate_load(trainer.model, training_args)
 
-    ONNX_EXPORT = os.environ.get('MOEBERT_EXPORT_ONNX', '0') == '1'
-    print('onnx:', ONNX_EXPORT)
-    if ONNX_EXPORT:
-        from transformers.moebert.moe_layer import create_scripted_moe
-        trainer.model.eval()
-        # trainer.model.config.use_return_dict = True
-        device = list(trainer.model.parameters())[0].device
-        if config.moebert_route_method == 'gate-sentence':
-            model = create_scripted_moe(trainer.model)
-        else:
-            model = trainer.model
-        for batch_size in [1]:
-            for seq_len in [64, 128, 256]:
-                onnx_path = os.path.join(training_args.output_dir, f'model-bs{batch_size}-L{seq_len}.onnx')
-                if os.path.exists(onnx_path):
-                    continue
-                print(f'scripting bs{batch_size}-L{seq_len}...')
-                inputs = {'input_ids': torch.arange(batch_size * seq_len).reshape(batch_size, seq_len).long().to(device),
-                          'attention_mask': torch.ones((batch_size, seq_len)).long().to(device),
-                          'token_type_ids': torch.zeros((batch_size, seq_len)).long().to(device),
-                          }
-                if  config.moebert_route_method == 'gate-sentence':
-                    scripted_model = torch.jit.trace(model, example_inputs=list(tuple(inputs.values())), strict=False, check_trace=False)
-                else:
-                    scripted_model = model
-                print(f'Exporting bs{batch_size}-L{seq_len}...')
-                torch.onnx.export(scripted_model,               # model being run
-                                  tuple(inputs.values()),      # model input (or a tuple for multiple inputs)
-                                  f=onnx_path,  # where to save the model (can be a file or file-like object)
-                                  export_params=True,        # store the trained parameter weights inside the model file
-                                  opset_version=11,          # the ONNX version to export the model to
-                                  do_constant_folding=True,  # whether to execute constant folding for optimization
-                                  input_names=['input_ids', 'attention_mask', 'token_type_ids'],   # the model's input names
-                                  output_names=['logits'],  # the model's output names
-                                  )
+def do_profile(model, eval_dataset, training_args: TrainingArguments, data_args: DataTrainingArguments):
+    device = torch.device('cuda:0') if os.environ.get('CUDA_VISIBLE_DEVICES', '-1') != '-1' else torch.device('cpu')
+    from torch.profiler import profile, record_function, ProfilerActivity
+    from pathlib import Path
+    model = model.to(device).eval()
+    inputs = []
+    for i in range(120):
+        input_raw = eval_dataset[i:i + 1]
+        input_ = {x: torch.tensor(input_raw[x]).to(device) for x in ['input_ids', 'attention_mask', 'token_type_ids']}
+        inputs.append(input_)
+
+    dev = 'cuda_' if 'cuda' in str(device) else 'cpu_'
+    with torch.profiler.profile(
+            schedule=torch.profiler.schedule(wait=20, warmup=10, active=80, repeat=1),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(Path(
+                '/nvme2/yujiepan/workspace/moe-bert/moe-bert-learning/Playground/0327.moe-onnx/tb_300/',
+                dev + Path(training_args.output_dir).name + f'_L{data_args.max_seq_length}',
+            ).as_posix()),
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA] if 'cuda' in dev else [ProfilerActivity.CPU],
+            record_shapes=False,
+            profile_memory=False,
+            with_modules=True,
+            with_stack=True,
+    ) as prof:
+        for i, input_ in enumerate(inputs):
+            model(**input_)
+            prof.step()
 
 
 def _mp_fn(index):

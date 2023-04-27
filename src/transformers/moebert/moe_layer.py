@@ -87,7 +87,8 @@ class MoELayer(nn.Module):
         if not hasattr(self, 'helper_orders') or self.helper_orders.numel() != seq_len * bsz:
             self.helper_orders = torch.arange(seq_len * bsz).to(x.device)
         orders = self.helper_orders
-        gate_load = 0.0
+        gate_load = torch.tensor(0.0)
+        balance_loss = torch.tensor(0.0)
 
         ids0 = (gate == 0)
         x_l0 = self.experts[0](x[ids0])
@@ -109,7 +110,7 @@ class MoELayer(nn.Module):
         order = torch.cat([order_l0, order_l1, order_l2, order_l3], dim=0)
         x = x[order.argsort(0)]  # restore original order
         x = x.view(bsz, seq_len, dim)
-        return x, 0.0, gate_load
+        return x, balance_loss, gate_load
 
 
     def _forward_gate_sentence(self, x, attention_mask):
@@ -173,6 +174,7 @@ class MoELayer(nn.Module):
             x = self.experts[2](x)
         else:  # torch.eq(gate, 3):
             x = self.experts[3](x)
+        # x = self.experts[gate](x)
         return x, 0.0, 0.0
 
     def _forward_hash(self, x, input_ids):

@@ -242,6 +242,7 @@ class MoEBertEncoder(BertEncoder):
                     all_hidden_states,
                     all_self_attentions,
                     all_cross_attentions,
+                    torch.tensor(gate_loss, dtype=hidden_states.dtype, device=hidden_states.device).reshape(-1, 1),
                 ]
                 if v is not None
             )
@@ -421,7 +422,10 @@ class MoEBertForSequenceClassification(BertPreTrainedModel):
             expert_input_ids=expert_input_ids,
             expert_attention_mask=expert_attention_mask,
         )
-        gate_loss = outputs.gate_loss
+        if return_dict:
+            gate_loss = outputs.gate_loss
+        else:
+            gate_loss = outputs[-1]
         pooled_output = outputs[1]
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
@@ -456,7 +460,10 @@ class MoEBertForSequenceClassification(BertPreTrainedModel):
             If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        # return_dict = False
+        import os
+        ONNX_EXPORT = os.environ.get('MOEBERT_EXPORT_ONNX', '0') == '1'
+        if ONNX_EXPORT and self.config.moebert_route_method == 'gate-sentence':
+            return_dict = False
         if self.training:
             output_hidden_states = True
 

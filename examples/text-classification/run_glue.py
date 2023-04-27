@@ -265,6 +265,10 @@ class ModelArguments:
         default=0.0,
         metadata={"help": "Token Masking Probability"},
     )
+    num_hidden_layers: Optional[int] = field(
+        default=12,
+        metadata={"help": "# transformer blocks"},
+    )
 
 
 def main():
@@ -406,6 +410,7 @@ def main():
         adapter_size=model_args.adapter_size,
         reg_loss_wgt=model_args.reg_loss_wgt,
         masking_prob=model_args.masking_prob,
+        num_hidden_layers=model_args.num_hidden_layers,
     )
 
     if model_args.preprocess_importance:
@@ -683,11 +688,14 @@ def main():
             eval_datasets.append(datasets["validation_mismatched"])
 
         for eval_dataset, task in zip(eval_datasets, tasks):
-            metrics = trainer.evaluate(eval_dataset=eval_dataset)
+            NNCF_JSON = os.environ.get('MOEBERT_NNCF_CONFIG', 'None')
+            if os.path.isfile(NNCF_JSON):
+                trainer.model = create_nncf_model(trainer, eval_dataset, NNCF_JSON, training_args, data_args, model_args)
+                continue
 
+            metrics = trainer.evaluate(eval_dataset=eval_dataset)
             max_val_samples = data_args.max_val_samples if data_args.max_val_samples is not None else len(eval_dataset)
             metrics["eval_samples"] = min(max_val_samples, len(eval_dataset))
-
             trainer.log_metrics("eval", metrics)
             trainer.save_metrics("eval", metrics)
 
@@ -726,10 +734,10 @@ def main():
         save_to = os.path.join(training_args.output_dir, f'gate_load.pth')
         torch.save(results, save_to)
         print('log gate load', save_to)
-    
+
     log_gate_load(trainer.model, training_args)
 
-    ONNX_EXPORT = os.environ.get('MOEBERT_EXPORT_ONNX', '0') == '1'
+    ONNX_EXPORT = os.environ.get('MOEBERT_EXPORT_ONNX', '0') == '1' and os.environ.get('MOEBERT_NNCF_CONFIG', 'None') is None
     print('onnx:', ONNX_EXPORT)
     if ONNX_EXPORT:
         from transformers.moebert.moe_layer import create_scripted_moe
@@ -750,7 +758,7 @@ def main():
                           'attention_mask': torch.ones((batch_size, seq_len)).long().to(device),
                           'token_type_ids': torch.zeros((batch_size, seq_len)).long().to(device),
                           }
-                if  config.moebert_route_method == 'gate-sentence':
+                if config.moebert_route_method == 'gate-sentence':
                     scripted_model = torch.jit.trace(model, example_inputs=list(tuple(inputs.values())), strict=False, check_trace=False)
                 else:
                     scripted_model = model
@@ -769,6 +777,36 @@ def main():
 def _mp_fn(index):
     # For xla_spawn (TPUs)
     main()
+
+
+def create_nncf_model(trainer: Trainer, eval_dataset, NNCF_JSON: str, training_args, data_args, model_args):
+    import nncf
+    from nncf.config import NNCFConfig
+    from nncf.config.structures import (BNAdaptationInitArgs,
+                                        QuantizationRangeInitArgs)
+    from nncf.torch import create_compressed_model
+    from nncf.torch.initialization import PTInitializingDataLoader
+
+    class MyInitializingDataloader(PTInitializingDataLoader):
+        def get_inputs(self, dataloader_output):
+            return (), dataloader_output
+
+    train_dataloader = trainer.get_eval_dataloader()
+    nncf_config = NNCFConfig.from_json(NNCF_JSON)
+    for i in range(len(nncf_config['input_info'])):
+        nncf_config['input_info'][i]['sample_size'] = [1, data_args.max_seq_length]
+
+    nncf_config.register_extra_structs([
+        QuantizationRangeInitArgs(MyInitializingDataloader(train_dataloader)),
+        BNAdaptationInitArgs(MyInitializingDataloader(train_dataloader)),
+    ])
+    trainer.model.train()
+    compression_ctrl, compressed_model = create_compressed_model(trainer.model, nncf_config)
+    trainer.model = compressed_model
+    onnx_path = os.path.join(training_args.output_dir, f'model-bs{1}-L{data_args.max_seq_length}.onnx')
+    print(compressed_model)
+    compression_ctrl.export_model(onnx_path)
+    return compressed_model
 
 
 if __name__ == "__main__":

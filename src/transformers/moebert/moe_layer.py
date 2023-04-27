@@ -47,7 +47,7 @@ class MoELayer(nn.Module):
 
         x = x.view(-1, dim)
         logits_gate = self.gate(x)
-        prob_gate = F.softmax(logits_gate, dim=-1)
+        prob_gate = F.softmax(logits_gate, dim=-1) # [bxl, 4]
         gate = torch.argmax(prob_gate, dim=-1)
 
         order = gate.argsort(0)
@@ -66,10 +66,15 @@ class MoELayer(nn.Module):
         prob_gate = prob_gate[order]
         prob_gate = prob_gate.split(num_tokens.tolist(), dim=0)
 
-        def forward_expert(input_x, prob_x, expert_idx):
-            input_x = self.experts[expert_idx].forward(input_x)
-            input_x = input_x * prob_x
-            return input_x
+        def forward_expert(input_x, prob_x, expert_idx): # nxd, nx1
+            output = self.experts[expert_idx].forward(input_x)
+            final_output = output * (torch.ones_like(prob_x) - prob_x.detach() + prob_x)
+            for i in range(len(self.experts)):
+                if i == expert_idx:
+                    continue
+                output = self.experts[i].forward(input_x)
+                final_output = final_output + output * (torch.zeros_like(prob_x) - prob_x.detach() + prob_x)
+            return final_output
 
         x = [forward_expert(x[i], prob_gate[i], i) for i in range(self.num_experts)]
         x = torch.vstack(x)
@@ -145,6 +150,7 @@ class MoELayer(nn.Module):
         for i in range(self.num_experts):
             if x[i].size(0) > 0:
                 result.append(forward_expert(x[i], prob_gate[i], i))
+
         result = torch.vstack(result)
         result = result[order.argsort(0)]  # restore original order
 

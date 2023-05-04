@@ -68,6 +68,7 @@ class MoELayer(nn.Module):
 
         def forward_expert(input_x, prob_x, expert_idx): # nxd, nx1
             output = self.experts[expert_idx].forward(input_x)
+            # return output * prob_x
             final_output = output * (torch.ones_like(prob_x) - prob_x.detach() + prob_x)
             for i in range(len(self.experts)):
                 if i == expert_idx:

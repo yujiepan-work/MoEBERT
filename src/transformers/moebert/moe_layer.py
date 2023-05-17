@@ -82,7 +82,8 @@ class MoELayer(nn.Module):
         x = x[order.argsort(0)]  # restore original order
         x = x.view(bsz, seq_len, dim)
 
-        return x, balance_loss, gate_load
+        pruned_token_mask = None
+        return x, balance_loss, gate_load, pruned_token_mask
 
     def _forward_gate_token_onnx(self, x):
         bsz, seq_len, dim = x.size()
